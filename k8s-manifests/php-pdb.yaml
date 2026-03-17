@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: php-apache-pdb
+spec:
+  # This ensures at least 3 pod is ALWAYS running, 
+  # even if the cluster is trying to scale down nodes.
+  minAvailable: 3
+  maxUnavailable: 2
+  selector:
+    matchLabels:
+      run: php-apache
