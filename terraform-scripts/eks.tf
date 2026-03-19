@@ -68,12 +68,15 @@ resource "aws_iam_policy" "cluster_autoscaler" {
         Effect = "Allow"
         Action = [
           "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeScalingPolicies",
           "autoscaling:DescribeAutoScalingInstances",
           "autoscaling:DescribeLaunchConfigurations",
           "autoscaling:DescribeScalingActivities",
-          "autoscaling:DescribeTags",
-          "ec2:DescribeInstanceTypes",      # <--- This was missing from managed policy
-          "ec2:DescribeLaunchTemplateVersions"
+          "ec2:DescribeImages",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeLaunchTemplateVersions",
+          "ec2:GetInstanceTypesFromInstanceRequirements",   
+          "eks:DescribeNodegroup"
         ]
         Resource = "*"
       },
@@ -81,7 +84,8 @@ resource "aws_iam_policy" "cluster_autoscaler" {
         Effect = "Allow"
         Action = [
           "autoscaling:SetDesiredCapacity",
-          "autoscaling:TerminateInstanceInAutoScalingGroup"
+          "autoscaling:TerminateInstanceInAutoScalingGroup",
+          "autoscaling:UpdateAutoScalingGroup"
         ]
         Resource = "*"
       }
@@ -104,6 +108,7 @@ resource "aws_iam_role" "cluster_autoscaler_irsa_role" {
       Condition = {
         StringEquals = {
           "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" = "system:serviceaccount:kube-system:cluster-autoscaler"
+          "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud" = "sts.amazonaws.com"       #updated
         }
       }
     }]
@@ -114,7 +119,7 @@ resource "aws_iam_role" "cluster_autoscaler_irsa_role" {
 resource "aws_iam_role_policy_attachment" "autoscaler" {
 
   role       = aws_iam_role.cluster_autoscaler_irsa_role.name
-  policy_arn = aws_iam_policy.cluster_autoscaler.arn
+  policy_arn = aws_iam_policy.cluster_autoscaler.arn    #switched from AutoScalerFullAccess
 }
 
 #---create eks cluster

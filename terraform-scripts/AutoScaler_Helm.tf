@@ -21,13 +21,17 @@ resource "helm_release" "metrics_server" {
 
 resource "helm_release" "cluster_autoscaler" {
 
-  depends_on = [ null_resource.wait_for_cluster,   
+  depends_on = [ null_resource.wait_for_cluster,  
+    aws_iam_role_policy_attachment.autoscaler,
+    aws_eks_access_policy_association.github_admin,
+    aws_iam_openid_connect_provider.eks  
   ]
 
   name       = "cluster-autoscaler"
   repository = "https://kubernetes.github.io/autoscaler"
   chart      = "cluster-autoscaler"
   namespace  = "kube-system"
+  version = "9.38.0"    #see version chart Heml Chart vs K8s vs CA versions
 
   set {
     name  = "autoDiscovery.clusterName"
@@ -36,6 +40,10 @@ resource "helm_release" "cluster_autoscaler" {
   set {
     name  = "awsRegion"
     value = "us-east-1"
+  }
+  set {
+  name  = "image.tag"
+  value = "v${var.eks_version}.0"  # e.g. v1.29.0 if eks_version = "1.29" #updated
   }
   set {
     name  = "rbac.serviceAccount.create"
@@ -48,5 +56,9 @@ resource "helm_release" "cluster_autoscaler" {
   set {
     name  = "rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
     value = aws_iam_role.cluster_autoscaler_irsa_role.arn
+  }
+  set {
+    name  = "extraArgs.skip-nodes-with-system-pods"
+    value = "false" # Allows scaling even if kube-system pods are on the node
   }
 }
