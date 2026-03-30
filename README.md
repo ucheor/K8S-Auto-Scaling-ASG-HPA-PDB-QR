@@ -6,12 +6,26 @@ One of the most powerful capabilities of Kubernetes is its ability to automatica
 -	**Horizontal Pod Autoscaler (HPA)** — scales the number of pods based on CPU utilisation
 -	**Pod Disruption Budget (PDB)** — enforces availability constraints during voluntary disruptions
 -	**Cluster Autoscaler (CA)** — adds or removes EC2 nodes as pod demand changes
+
 Every step below is backed by real terminal output so you can follow along, reproduce it yourself, or simply understand what is happening under the hood.
 
 ## Part 1 — Setting Up the Cluster
 
 **Step 1: Provision the EKS Cluster with Terraform**  
 We start by provisioning an Amazon EKS cluster using Terraform. The cluster is configured with a Cluster Autoscaler-enabled Auto Scaling Group (ASG) so that Kubernetes can request new EC2 nodes from AWS when pods cannot be scheduled due to insufficient capacity.
+
+**IMPORTANT**: Configure the backend.tf with your S3 bucket name
+
+```
+cd terraform-scripts
+ls
+```
+
+![update backend terraform file](images/extra_02_update_backend_tf.png)
+
+---
+
+To create our cluster, let's start by initializing terraform.
 
 ```
 terraform init
@@ -105,7 +119,7 @@ To trigger autoscaling we deploy a load-generator: 2 replicas of a BusyBox conta
 kubectl apply -f load-generator.yaml
 ```
 
-The load generator application creates 4 worker processes per pod × 2 pods = 8 concurrent HTTP request streams hitting the service continuously. This is enough to push CPU well past the 50% threshold almost immediately. The plan is to emulate increase traffic to our application, leading to higher CPU utilization. Once the CPU utilization goes reaches 50%, the HPA should become active and start scaling the pods to accomodate the increased traffic. 
+The load generator application creates 4 worker processes per pod × 2 pods = 8 concurrent HTTP request streams hitting the service continuously. This is enough to push CPU well past the 50% threshold almost immediately. The plan is to emulate increased load on our application, leading to higher CPU utilization. Once the CPU utilization goes reaches 50%, the HPA should become active and start scaling the pods to accomodate the increased load. 
 
 ![Load generator pods are running alongside the php-apache pods](images/06_load_generator_deployed.png)
 
@@ -156,46 +170,91 @@ In our configuration *php-hpa.yaml*, it checks every 10 seconds. If it sees pods
 
 **Step 7: Delete the Load Generator - Scaling Down**
 
-Once we have demonstrated scale-out, we remove the load generator to let the system relax:
+Now that we have demonstrated scale-up using HPA, let's remove the load generator deployment to let the system scale back down:
+
+```
 kubectl delete -f load-generator.yaml
- 
-Image 10 — 10_delete_load_generator.png: Load generator deployment deleted
-Step 8: HPA Begins Scaling Down
-Without load, CPU drops to 0%. The HPA does not scale down instantly — it waits for the scaleDown stabilizationWindowSeconds (30 s) and then removes at most 25% of pods every 15 seconds. This prevents flapping if load spikes again briefly.
-Watching both pods and HPA simultaneously:
+```
+![Load generator deployment deleted](images/10_delete_load_generator.png)
+
+---
+
+**Step 8: HPA Begins Scaling Down**  
+
+Without the load generator, the CPU drops to 0%. As previously configured, the HPA does not scale down instantly — it waits for the scaleDown stabilizationWindowSeconds (30 s) and then removes at most 25% of pods every 15 seconds. This prevents flapping if load spikes again briefly.
+Let's watch both pods and HPA simultaneously. The HPA progressively reducing replica count from 15 back toward the minimum, 2.
+
+```
 kubectl get pods -l run=php-apache -w
 kubectl get hpa -w
- 
-Image 11 — 11_scale_down_started.png: HPA progressively reducing replica count from 15 back toward 2, with pods Terminating in waves
-Step 9: Cluster Autoscaler Scales Down Nodes
-Once the pod count drops, nodes have spare capacity. After a cool-down period (default 10 minutes of underutilisation), the Cluster Autoscaler cordons and drains excess nodes and terminates the underlying EC2 instances.
- 
-Image 12 — 12_nodes_left.png: Cluster returning to fewer nodes as load subsides
- 
-Image 13 — 13_back_to_2_pods_and_2_nodes.png: System stabilises at 2 pods on 2 nodes — exactly where we started
+```
 
-Part 4 — Manual Scaling and the HPA Relationship
-Step 10: Manually Scale the Deployment
-One common question is: what happens if you manually scale a deployment that is managed by an HPA? The answer is instructive.
-If you scale up beyond the HPA maximum, the HPA will eventually pull it back down. If you scale below the HPA minimum, the HPA will scale it back up. Only within the min/max window does the HPA let your manual change persist — and even then it will adjust it at the next evaluation based on metrics.
+![HPA scaling down](images/11_scale_down_started.png)
+ 
+---
+
+**Step 9: Cluster Autoscaler Scales Down Nodes**  
+
+Once the pod count drops, nodes have spare capacity. After a cool-down period (default 10 minutes of underutilisation), the Cluster Autoscaler cordons and drains excess nodes (NotReady, SchedulingDisabled) and terminates the underlying AWS EC2 instances. The cluster returns to fewer nodes in the absence of the extra load.
+
+![nodes are scaled down](images/12_nodes_left.png)
+ 
+We should be back to minimum nodes count and minimum pods count since the load has been removed.
+
+![nodes and pods are back to normal](images/13_back_to_2_pods_and_2_nodes.png)
+
+---
+
+## Part 4 — Manual Scaling and the HPA Relationship  
+
+**Step 10: Manually Scale the Deployment to Test HPA**  
+
+**One common question is:** what happens if you manually scale a deployment that is managed by an HPA? The answer is instructive.
+If you scale up beyond the HPA maximum, the HPA will eventually pull it back down. If you scale below the HPA minimum, the HPA will scale it back up. Only within the min/max window does the HPA let your manual change persist — and even then it will adjust it at the next evaluation based on metrics. 
+
+To test this out, while keeping out min and max for our HPA at 2 and 15 respectively, let's try to scale up when there is no extra node and then, try to scale down below the minimum.
+
+```
 kubectl scale deployment php-apache --replicas=3
 kubectl get pods -w
+```
+In trying to scale the replica count to 3, the HPA will calculate to see if there is a need for the 3 pods. Once it realizes the CPU utilization does not warrant 3 pods, it will quickly scale back down to 2 pods and remove the excess pod.
  
-Image 14 — 14_scale_up_to_3_with_hpa_2.png: Manually scaling to 3 replicas; HPA observes this but does not intervene since 3 is within min=2, max=15
-kubectl scale deployment php-apache --replicas=1
- 
-Image 15 — 15_scale_down_to_1_with_hpa_2.png: Scaling to 1 below the HPA minimum of 2; the HPA immediately restores the second pod
-💡 Key takeaway: The HPA owns the replica count. If you manually set replicas below the minimum, the HPA corrects it within the next reconciliation loop (typically within 15–30 seconds). Manual scaling is useful for one-off adjustments but the HPA always has the final say.
+![scale up to 3 pods to test HPA](images/14_scale_up_to_3_with_hpa_2.png)
 
-Part 5 — Introducing the Pod Disruption Budget
-What is a PodDisruptionBudget?
+---
+
+On the other hand, when we try to scale down to 1 replica, the HPA prevents this from happening since the minimum specified is 2 pods. It does not allow for less than 2 pods to exist in the cluster.
+
+```
+kubectl scale deployment php-apache --replicas=1
+kubectl get pods -w
+```
+ 
+![scaling below HPA minimum](images/15_scale_down_to_1_with_hpa_2.png)
+
+**Key takeaway:** The HPA owns the replica count. If you manually set replicas below the minimum, the HPA corrects it within the next reconciliation loop (typically within 15–30 seconds). Manual scaling is useful for one-off adjustments but the HPA always has the final say. Thus, while 
+
+---
+
+## Part 5 — Introducing the Pod Disruption Budget
+
+**What is a PodDisruptionBudget?**  
+
 A PodDisruptionBudget (PDB) limits how many pods from a given selector can be voluntarily disrupted at the same time. "Voluntary" means actions like kubectl drain (node maintenance), a rolling deployment update, or the Cluster Autoscaler evicting pods to reclaim a node.
-Without a PDB, draining a node could kill all your pods simultaneously if they happened to be running on that node. With a PDB, Kubernetes will refuse an eviction that would violate the budget and retry later.
-Step 11: Remove HPA, Apply PDB, and Scale to 5
+
+Without a PDB, draining a node could kill all your pods simultaneously if they happened to all be running on that node. With a PDB, Kubernetes will refuse an eviction that would violate the budget and retry later.
+
+**Step 11: Remove HPA, Apply PDB, and Test Pod Disruption Budget**  
+
 For this part of the demo, we first delete the HPA (so it does not interfere with our manual replica count) and then create a PDB:
+
+```
 kubectl delete -f php-hpa.yaml
 kubectl apply -f php-pdb.yaml
 kubectl get pdb
+```
+
 The PDB configuration:
 spec:
   minAvailable: 3
