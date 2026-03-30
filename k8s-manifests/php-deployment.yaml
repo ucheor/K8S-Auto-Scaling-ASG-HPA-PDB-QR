@@ -20,7 +20,7 @@ spec:
         - containerPort: 80
         resources:
           requests:
-            cpu: 480m          # Exactly calculated for 15 pods on 4 nodes
+            cpu: 480m          
             memory: 256Mi
           limits:
             cpu: 1000m
