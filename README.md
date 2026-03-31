@@ -161,7 +161,7 @@ We can confirm that new nodes are joining the cluster so they can accomodate the
 ![New instances are provisioned and Ready](images/09_ASG-scaling.png)
 
 
-# How the Cluster Autoscaler decides:   
+## How the Cluster Autoscaler decides:   
 In our configuration *php-hpa.yaml*, it checks every 10 seconds. If it sees pods that have been Pending for over 3 minutes due to insufficient resources, it calculates how many new nodes are needed and triggers an ASG scale-out. It will not add more nodes than the ASG maximum stated on the node group configuration.
 
 ---
@@ -245,6 +245,8 @@ A PodDisruptionBudget (PDB) limits how many pods from a given selector can be vo
 
 Without a PDB, draining a node could kill all your pods simultaneously if they happened to all be running on that node. With a PDB, Kubernetes will refuse an eviction that would violate the budget and retry later.
 
+---
+
 **Step 11: Remove HPA, Apply PDB, and Test Pod Disruption Budget**  
 
 For this part of the demo, we first delete the HPA (so it does not interfere with our manual replica count) and then create a PDB:
@@ -255,62 +257,127 @@ kubectl apply -f php-pdb.yaml
 kubectl get pdb
 ```
 
-The PDB configuration:
+Note the PDB configuration in *php-pdb.yaml*:
+
+```
 spec:
   minAvailable: 3
   selector:
     matchLabels:
       run: php-apache
+```
+
 This says: at no point during a voluntary disruption may fewer than 3 php-apache pods be available. Since we have 5 pods running and minAvailable is 3, at most 2 can be disrupted simultaneously.
  
-Image 16 — 16_pdb_scale_up_to_5.png: HPA deleted, PDB created with minAvailable: 3, deployment scaled to 5
+![delete hpa and apply pdb](images/16_delete_hpa_apply_pdb.png)
+
+We can now go ahead and scale the deployment up to 5 replicas.
+
+```
+kubectl scale deployment php-apache --replicas=5
+```
+
+![pods scaled to 5 replicas](images/17_pdb_demo_scale_5.png)
  
-Image 17 — 17_pdb_demo_scale_5.png: All 5 pods running, distributed across the two available nodes
-Step 12: Drain a Node and Watch the PDB Enforce Its Budget
-Now we trigger a voluntary disruption. We cordon one node (preventing new pods from landing on it) and then drain another — which evicts all pods on that node and reschedules them elsewhere.
-kubectl cordon ip-10-0-3-92.ec2.internal
-kubectl drain ip-10-0-4-159.ec2.internal --ignore-daemonsets --delete-emptydir-data
- 
-Image 18 — 18_start_drain.png: kubectl drain in progress; the PDB blocks eviction of 75rnw pod with the message "Cannot evict pod as it would violate the pod's disruption budget" and retries after 5s
+We should now have all our 5 pods running, distributed across the two available nodes. Note the names of the nodes. We will need it in a later stage.
+
+---
+
+**Step 12: Drain a Node and Watch the PDB Enforce Its Budget**  
+
+Now we trigger a voluntary disruption. We cordon one node (preventing new pods from landing on it) and then drain another — which evicts all pods on that node and reschedules them elsewhere. 
+
+```
+kubectl get nodes
+```
+
+Note the name of both nodes. In our case we have 3 pods on *ip-10-0-4-159.ec2.internal* and 2 pods on *ip-10-0-3-92.ec2.internal*
+
+---
+
+Let's cordon off the node with 2 pods so they are unable to accept more and try to drain the node with 3 pods. Our excpectation is that since the pod disruption budget is 3, evicting all the 3 pods will casue an issue since that will only leave 2 pods running.
+
+```
+kubectl cordon *ip-10-0-3-92.ec2.internal*  # update with your node name
+```
+
+---
+
+```
+kubectl drain *ip-10-0-4-159.ec2.internal* --ignore-daemonsets --delete-emptydir-data   # update with your node name
+```
+
+![drain nodes to test Pod Disruption Budget](images/18_start_drain.png) 
+
+
+The kubectl drain process could not be completed - the PDB blocks eviction of 75rnw pod with the message "Cannot evict pod as it would violate the pod's disruption budget" and retries after 5s
+
 This is the PDB doing its job. The drain tries to evict all pods on that node at once, but the PDB enforces that 3 must always be available. So evictions happen one at a time, waiting for each evicted pod to be rescheduled and reach Running before allowing the next eviction.
-💡 What you would see without a PDB: Without a PDB, all pods on the drained node would be terminated simultaneously. If the application has any in-flight requests or a cold-start delay, this can cause a noticeable outage. The PDB gives Kubernetes the information it needs to perform a rolling eviction instead.
-Step 13: Cluster Autoscaler Kicks In During Drain
+
+
+**What you would see without a PDB:**  
+Without a PDB, all pods on the drained node would be terminated simultaneously. If the application has any in-flight requests or a cold-start delay, this can cause a noticeable outage. The PDB gives Kubernetes the information it needs to perform a rolling eviction instead.
+
+---
+
+**Step 13: Cluster Autoscaler Kicks In During Drain**  
+
 As pods get evicted from the drained node, they must be rescheduled. But we also cordoned the other original node, so there is no room on the remaining nodes. The Cluster Autoscaler detects the Pending pods and provisions a new node.
  
 Image 19 — 19_auto-scaler_kicks_in.png: New node joining the cluster to absorb pods displaced by the drain; kubectl uncordon restores the surviving nodes once the drain completes
-Step 14: Extra Nodes Scale Down After Drain Completes
+
+---
+
+**Step 14: Extra Nodes Scale Down After Drain Completes ** 
+
 Once the drain is finished and all pods are Running on healthy nodes, the cordoned and drained nodes have no workload. The Cluster Autoscaler marks them for termination and removes them after the cooldown.
  
 Image 20 — 20_extra_nodes_scaling_down.png: Excess nodes removed by the Cluster Autoscaler after drain; kubectl get nodes -w shows them moving through SchedulingDisabled → NotReady → gone
-Step 15: System Stabilises
+
+**Step 15: System Stabilises **  
+
 After uncordoning the surviving nodes and allowing the Cluster Autoscaler to reclaim the extras, the cluster settles back to a healthy state with all pods distributed across available nodes.
  
-Image 21 — 21_system_stable.png: Cluster stable with 5 pods running on 2 nodes after the drain cycle completes
+![cluster stable](images/21_system_stable.png)
 
-Part 6 — Clean Up
+Cluster is stable with 5 pods running on 2 nodes after the drain cycle completes
+
+---
+
+## Part 6 — Clean Up
+
 With the demo complete, we clean up all resources to avoid incurring AWS charges:
+```
 kubectl delete deployment.apps/php-apache
 kubectl delete pdb php-apache-pdb
+```
+
+```
 cd ../terraform-scripts && terraform destroy
- 
-Image 22 — 22_clean_up.png: Deployment and PDB deleted; 
+```
+
+![clean up AWS resources](images/22_clean_up.png)
 
 Use terraform destroy to tear down the EKS cluster and all associated AWS resources.
 
 ## Summary: Three Layers of Kubernetes Auto-Scaling
 
 This walkthrough demonstrated how three Kubernetes features work together to create a self-healing, cost-efficient cluster:
-Horizontal Pod Autoscaler (HPA)
-•	Watches CPU (or custom metrics) against a target utilisation
-•	Scales pods up quickly and down conservatively using configurable behaviors
-•	Always maintains between minReplicas and maxReplicas
-Pod Disruption Budget (PDB)
-•	Prevents voluntary disruptions from violating your availability requirements
-•	Forces rolling evictions instead of mass terminations during node drain or maintenance
-•	Works with the Cluster Autoscaler to protect workloads during scale-down
-Cluster Autoscaler (CA)
-•	Adds nodes when pods are Pending due to insufficient capacity
-•	Removes underutilised nodes after a cooldown period
-•	Respects PDBs and pod anti-affinity rules before draining a node
+
+**Horizontal Pod Autoscaler (HPA)**  
+-	Watches CPU (or custom metrics) against a target utilisation
+-	Scales pods up quickly and down conservatively using configurable behaviors
+-	Always maintains between minReplicas and maxReplicas
+**Pod Disruption Budget (PDB)**   
+-	Prevents voluntary disruptions from violating your availability requirements
+-	Forces rolling evictions instead of mass terminations during node drain or maintenance
+-	Works with the Cluster Autoscaler to protect workloads during scale-down
+**Cluster Autoscaler (CA)**  
+-	Adds nodes when pods are Pending due to insufficient capacity
+-	Removes underutilised nodes after a cooldown period
+-	Respects PDBs and pod anti-affinity rules before draining a node
 
 Used together, these three mechanisms mean your application can handle sudden traffic spikes without manual intervention, and your infrastructure costs track actual usage rather than worst-case provisioning.
+
+---
+
