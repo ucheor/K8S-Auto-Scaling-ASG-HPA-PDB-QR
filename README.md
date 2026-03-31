@@ -375,15 +375,17 @@ This walkthrough demonstrated how three Kubernetes features work together to cre
 **Horizontal Pod Autoscaler (HPA)**  
 -	Watches CPU (or custom metrics) against a target utilisation
 -	Scales pods up quickly and down conservatively using configurable behaviors
--	Always maintains between minReplicas and maxReplicas
+-	Always maintains between minReplicas and maxReplicas  
+
 **Pod Disruption Budget (PDB)**   
 -	Prevents voluntary disruptions from violating your availability requirements
 -	Forces rolling evictions instead of mass terminations during node drain or maintenance
--	Works with the Cluster Autoscaler to protect workloads during scale-down
+-	Works with the Cluster Autoscaler to protect workloads during scale-down  
+
 **Cluster Autoscaler (CA)**  
 -	Adds nodes when pods are Pending due to insufficient capacity
 -	Removes underutilised nodes after a cooldown period
--	Respects PDBs and pod anti-affinity rules before draining a node
+-	Respects PDBs and pod anti-affinity rules before draining a node  
 
 Used together, these three mechanisms mean your application can handle sudden traffic spikes without manual intervention, and your infrastructure costs track actual usage rather than worst-case provisioning.
 
