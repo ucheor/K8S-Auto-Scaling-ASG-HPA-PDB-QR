@@ -334,7 +334,9 @@ As pods get evicted from the drained node, they must be rescheduled. But we also
 
 **Step 14: Extra Nodes Scale Down After Drain Completes** 
 
-Once the drain is finished and all pods are Running on healthy nodes, the drained node will have no pods. The Cluster Autoscaler marks all provisioned idle nodes for termination and removes them after the cooldown. We can view them moving through SchedulingDisabled → NotReady → Gone.
+Once the drain is finished and all pods are Running on healthy nodes, the drained node will have no pods. The Cluster Autoscaler marks all provisioned idle nodes for termination and removes them after the cooldown. 
+
+We can view them moving through SchedulingDisabled → NotReady → Gone.
 
 ```
 kubectl get nodes -w
@@ -347,6 +349,13 @@ kubectl get nodes -w
 **Step 15: System Stabilizes**  
 
 After uncordoning the surviving nodes and allowing the Cluster Autoscaler to reclaim the extras nodes, the cluster settles back to a healthy state with all pods distributed across available nodes. 
+
+In a different terminal, uncordon your nodes. Remember to update with your node name.
+
+```
+kubectl uncordon ip-10-0-3-92.ec2.internal      #update with your node name
+kubectl uncordon ip-10-0-3-92.ec2.internal
+```
  
 ![cluster stable](images/21_system_stable.png)
 
